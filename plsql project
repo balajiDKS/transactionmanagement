@@ -1,0 +1,142 @@
+create table transactions_tab  (transaction_no varchar(10),transaction_method varchar2(10),
+                                transaction_id number,transaction_type varchar(20),
+                                customer_id number,account_no number,branch_code varchar(20),amount number,
+                                trans_status varchar(20) ,credit_or_withdrawal varchar(25));
+INSERT INTO transactions_tab (transaction_no, transaction_method, transaction_id,   
+                            customer_id, account_no, amount, trans_status, credit_or_withdrawal);
+VALUES
+--('T-1', 'Debit', 1, 1, 1234567890, 10000, 'Pending', 'Debit');
+--('T-2', 'Credit', 2, 1, 1234567890, 56200, 'Completed', 'Credit');
+--('T-3', 'Debit', 3, 2, 9876543210, 50, 'Pending', 'Debit');
+--('T-4', 'Credit', 4, 2, 9876543210, 10000, 'Completed', 'Credit'),
+('T-5', 'Debit', 5, 3, 3456789012, 15000, 'Pending', 'Debit');
+commit
+alter table transactions_tab add transaction_datetime date;
+select * from transactions_tab;
+rollback;
+
+create table account_info (account_no number,customer_id number,product_code varchar(20),branch_code varchar(20),
+                            account_type varchar(20),account_opendate date,account_currency varchar(20),
+                            current_balance number,status varchar(20),close_date date);
+INSERT INTO account_info (account_no, customer_id, product_code, 
+                            branch_code,account_type, account_opendate,
+                            account_currency, current_balance, status, close_date);
+VALUES
+--(1234567890, 1, 'F653', 'BD05','SELF', '18-may-2021', 'USD', 1000, 'Active', null),
+--(9876543210, 2, 'S565', 'BA06', 'Saving', '05-jan-2021', 'USD', 500, 'Active', null),
+(3456789012, 3, 'F653', 'BS05', 'SELF', '27-sep-2021', 'USD', 1000, 'Active', null);
+select * from account_info;
+commit
+
+---PACKAGE (BANK_TRANSACTIONS_GEN)
+
+create or replace package bank_transactions_gen 
+as
+cns_min_balance constant number:=100.00;
+    procedure apply_transactions;
+    procedure transaction_entry (p_accountno in number, p_transaction_type in varchar,amount in number);
+end bank_transactions_gen;
+/
+
+---PACKAGE BODY (BANK_TRANSACTIONS_GEN)
+create or replace package body bank_transactions_gen
+as
+NEW_STATUS varchar(20);
+create or replace  procedure do_transaction_entry (p_accountno number,p_transaction_type varchar) 
+is
+
+begin q
+    if p_transaction_type ='d' then
+        new_status :='Debit';
+    elsif p_transaction_type ='c' then
+        new_status :='Credit';
+    else
+        new_status := 'new_account';
+    end if;
+    insert into transactions_tab (transaction_no,account_no,deposit_or_withdrawal,transaction_datetime)
+        values (tran_seqno.nextval,p_accountno,p_transaction_type,sysdate);
+end do_transaction_entry;
+
+
+create or replace procedure credit_account(p_accountno in number,p_credit in number)
+is
+old_balance number;
+new_balance number;
+begin
+    select current_balance into old_balance from account_info
+        where account_no=p_accountno for update of current_balance;
+    new_balance :=old_balance + p_credit;
+    update account_info set current_balance = new_balance where account_no=p_accountno;
+    do_transaction_entry (p_accountno,'c');
+    
+EXCEPTION
+    when no_data_found then
+        insert into account_info (account_no,current_balance)
+        values (p_accountno,p_credit);
+        do_transaction_entry(p_accountno,'n');
+    when others then
+        new_status :='error:'||sqlerrm(sqlcode);
+end credit_account;
+
+---- procedure debit account
+ procedure debit_account (p_accountno in number,p_debit in number ) 
+ is
+ old_balance number;
+ new_balance number;
+ insufficient_funds exception;
+ begin
+    select current_balance into old_balance from account_info 
+        where account_no=p_accountno for update of current_balance;
+    new_balance :=old_balance-p_debit;
+    if new_balance>= cns_minimum_balance then 
+        update account_info set current_balance=new_balance where account_no=p_accountno;
+        do_transacction_entry(p_accountno,'d');
+    else 
+        raise insuffient_funds;
+    end if;
+exception
+    when no_data_found then
+        new_status :='nonexistent account';
+    when insuffient_funds then
+        new_status :='insuffient funds';
+    when others then
+        new_status :='error:'||sqlerrm(sqlcode);
+end debit_account;
+
+---- PROCEDURE APPLY_TRANSACTIONS
+PROCEDURE apply_transactions
+is
+cursor trans_cursor is
+    select account_no,transaction_type,amount from transactions_tab
+    where trans_status='pending'
+    order by transaction_datetime for update of trans_status;
+begin
+    for trans in trans_cursor
+    loop
+        if trans.transaction_type ='d' then
+        debit_account(trans.account_no,trans.amount);
+        elsif trans.transaction_type ='c' then
+        credit_account(trans.account_no,trans.amount);
+        else
+        new_status :='rejected';
+        end if;
+    update transactions_tab set trans_status=new_status 
+    where current of trans_cursor;
+    end loop;
+    commit;
+end apply_transactions;
+
+-------PROCEDURE TRANSACTION_ENTRY
+
+PROCEDURE TRANSACTION_ENTRY (p_accountno in number,p_transaction_type in varchar,p_amount in number)
+is
+begin
+    insert into transactions_tab (transaction_no,account_no,deposit_or_withdrawal,amount,trans_status,transaction_time)
+    values (trans_seqno.nextval,p_accountno,p_transaction_type,p_amount,'pending',sysdate);
+    commit;
+end transaction_entry;
+end bank_transactions_gen;
+        
+create sequence trans_seqno start with 01 increment by 1;        
+        
+select * from transactions_tab;
